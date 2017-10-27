@@ -124,6 +124,11 @@ void start_run(const Config& configs, T* spec, const vector<const char*>& files)
     run_cputrace(configs, memory, files);
   } else if (configs["trace_type"] == "DRAM") {
     run_dramtrace(configs, memory, files[0]);
+    //****************************************//
+    // std::thread worker(run_dramtrace_on_thread<T>, std::cref(configs), std::ref(memory));
+    // std::thread test(sample_producer_thread, files[0]);
+    // worker.join();
+    // test.join();
   }
 }
 

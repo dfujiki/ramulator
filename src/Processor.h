@@ -13,6 +13,13 @@
 #include <ctype.h>
 #include <functional>
 
+#include <queue>
+#include <utility>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+
 namespace ramulator 
 {
 
@@ -32,6 +39,17 @@ private:
     std::string trace_name;
 };
 
+class TraceThread {
+public:
+    TraceThread(){};
+    bool get_dramtrace_request(long& req_addr, Request::Type& req_type);
+    static void enqueue(long req_addr, Request::Type req_type);
+    static void enqueue(long req_addr, const char* req_type);
+    static void notify_end();
+    static std::queue<std::pair<long, Request::Type> > q;
+    static std::mutex mtx;
+    static std::condition_variable cv;
+};
 
 class Window {
 public:

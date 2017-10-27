@@ -27,7 +27,8 @@ public:
         POWERDOWN,
         SELFREFRESH,
         EXTENSION,
-        MAX
+        MAX,
+        END
     } type;
 
     long arrive = -1;

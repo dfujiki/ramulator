@@ -7,9 +7,10 @@ OBJS := $(patsubst $(SRCDIR)/%.cpp, $(OBJDIR)/%.o, $(SRCS))
 
 # Ramulator currently supports g++ 5.1+ or clang++ 3.4+.  It will NOT work with
 #   g++ 4.x due to an internal compiler error when processing lambda functions.
-CXX := clang++
-# CXX := g++-5
+# CXX := clang++
+CXX := g++-5
 CXXFLAGS := -O3 -std=c++11 -g -Wall
+LDFLAGS := -lpthread
 
 .PHONY: all clean depend
 
@@ -33,10 +34,13 @@ endif
 
 
 ramulator: $(MAIN) $(OBJS) $(SRCDIR)/*.h | depend
-	$(CXX) $(CXXFLAGS) -DRAMULATOR -o $@ $(MAIN) $(OBJS)
+	$(CXX) $(CXXFLAGS) -DRAMULATOR -o $@ $(MAIN) $(OBJS) $(LDFLAGS)
 
 libramulator.a: $(OBJS) $(OBJDIR)/Gem5Wrapper.o
 	libtool -static -o $@ $(OBJS) $(OBJDIR)/Gem5Wrapper.o
+
+libramulatorwrapper.a: $(OBJS)
+	ar rcs $@ $(OBJS)
 
 $(OBJS): | $(OBJDIR)
 

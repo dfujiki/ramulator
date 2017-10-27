@@ -418,3 +418,45 @@ bool Trace::get_dramtrace_request(long& req_addr, Request::Type& req_type)
     else assert(false);
     return true;
 }
+
+
+std::queue<std::pair<long, Request::Type> > TraceThread::q;
+std::mutex TraceThread::mtx;
+std::condition_variable TraceThread::cv;
+
+bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
+{
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    while (TraceThread::q.empty()) {
+        TraceThread::cv.wait(lck);
+    }
+    auto entry = TraceThread::q.front();
+    TraceThread::q.pop();
+    if (entry.second == Request::Type::END) return false;
+    req_addr = entry.first;
+    req_type = entry.second;
+    return true;
+}
+
+void TraceThread::enqueue(long req_addr, Request::Type req_type)
+{
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    TraceThread::q.push(std::make_pair(req_addr, req_type));
+    TraceThread::cv.notify_all();
+}
+
+void TraceThread::enqueue(long req_addr, const char* req_type)
+{
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    Request::Type ty = req_type[0] == 'R'? Request::Type::READ  : 
+                       req_type[0] == 'W'? Request::Type::WRITE :
+                       Request::Type::END;
+    assert(ty != Request::Type::END);
+    TraceThread::q.push(std::make_pair(req_addr, ty));
+    TraceThread::cv.notify_all();
+}
+
+void TraceThread::notify_end()
+{
+    TraceThread::enqueue(0, Request::Type::END);
+}
