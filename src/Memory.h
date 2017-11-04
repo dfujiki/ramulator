@@ -43,6 +43,8 @@ class Memory : public MemoryBase
 protected:
   ScalarStat dram_capacity;
   ScalarStat num_dram_cycles;
+  ScalarStat num_stalled_cycles;
+  ScalarStat num_adjusted_dram_cycles;
   ScalarStat num_incoming_requests;
   VectorStat num_read_requests;
   VectorStat num_write_requests;
@@ -143,6 +145,16 @@ public:
         num_dram_cycles
             .name("dram_cycles")
             .desc("Number of DRAM cycles simulated")
+            .precision(0)
+            ;
+        num_stalled_cycles
+            .name("stalled_cycles")
+            .desc("Number of DRAM cycles stalled due to the poor design of the memory controller buffer size")
+            .precision(0)
+            ;
+        num_adjusted_dram_cycles
+            .name("adjusted_dram_cycles")
+            .desc("Number of DRAM cycles simulated and adjusted assuming no stall in MC")
             .precision(0)
             ;
         num_incoming_requests
@@ -319,6 +331,7 @@ public:
             return true;
         }
 
+        ++num_stalled_cycles;
         return false;
     }
 
@@ -344,6 +357,8 @@ public:
       in_queue_req_num_avg = in_queue_req_num_sum.value() / dram_cycles;
       in_queue_read_req_num_avg = in_queue_read_req_num_sum.value() / dram_cycles;
       in_queue_write_req_num_avg = in_queue_write_req_num_sum.value() / dram_cycles;
+
+      num_adjusted_dram_cycles = dram_cycles - num_stalled_cycles.value();
     }
 
     long page_allocator(long addr, int coreid) {
