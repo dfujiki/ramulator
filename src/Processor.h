@@ -41,14 +41,16 @@ private:
 
 class TraceThread {
 public:
-    TraceThread(){};
+    TraceThread(){ TraceThread::max_queue_size = std::numeric_limits<unsigned int>::max(); };
+    TraceThread(unsigned int max_queue_size) { TraceThread::max_queue_size = max_queue_size; };
     bool get_dramtrace_request(long& req_addr, Request::Type& req_type);
     static void enqueue(long req_addr, Request::Type req_type);
     static void enqueue(long req_addr, const char* req_type);
     static void notify_end();
     static std::queue<std::pair<long, Request::Type> > q;
     static std::mutex mtx;
-    static std::condition_variable cv;
+    static std::condition_variable cv, queueFull;
+    static std::queue<std::pair<long, Request::Type> >::size_type max_queue_size;
 };
 
 class Window {

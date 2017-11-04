@@ -423,6 +423,8 @@ bool Trace::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 std::queue<std::pair<long, Request::Type> > TraceThread::q;
 std::mutex TraceThread::mtx;
 std::condition_variable TraceThread::cv;
+std::condition_variable TraceThread::queueFull;
+std::queue<std::pair<long, Request::Type> >::size_type TraceThread::max_queue_size = std::numeric_limits<std::queue<std::pair<long, Request::Type> >::size_type>::max();
 
 bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 {
@@ -432,6 +434,7 @@ bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
     }
     auto entry = TraceThread::q.front();
     TraceThread::q.pop();
+    TraceThread::queueFull.notify_all();
     if (entry.second == Request::Type::END) return false;
     req_addr = entry.first;
     req_type = entry.second;
@@ -441,6 +444,9 @@ bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 void TraceThread::enqueue(long req_addr, Request::Type req_type)
 {
     std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    while (TraceThread::q.size() >= TraceThread::max_queue_size) {
+        TraceThread::queueFull.wait(lck);
+    }
     TraceThread::q.push(std::make_pair(req_addr, req_type));
     TraceThread::cv.notify_all();
 }
@@ -448,6 +454,9 @@ void TraceThread::enqueue(long req_addr, Request::Type req_type)
 void TraceThread::enqueue(long req_addr, const char* req_type)
 {
     std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    while (TraceThread::q.size() >= TraceThread::max_queue_size) {
+        TraceThread::queueFull.wait(lck);
+    }
     Request::Type ty = req_type[0] == 'R'? Request::Type::READ  : 
                        req_type[0] == 'W'? Request::Type::WRITE :
                        Request::Type::END;

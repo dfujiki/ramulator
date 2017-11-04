@@ -36,13 +36,15 @@ using namespace ramulator;
 
 namespace _RamulatorWrapper
 {
+const int max_queue_size = 10000000;
 
 template <typename T>
 void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memory)
 {
 
     /* initialize DRAM trace */
-    TraceThread trace;
+    TraceThread trace(max_queue_size);
+    int stalls = 0;
 
     /* run simulation */
     bool stall = false, end = false;
@@ -56,6 +58,7 @@ void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memor
 
     while (!end || memory.pending_requests())
     {
+        if (stall) stalls++;
         if (!end && !stall)
         {
             end = !trace.get_dramtrace_request(addr, type);
@@ -81,6 +84,7 @@ void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memor
     // This a workaround for statistics set only initially lost in the end
     memory.finish();
     Stats::statlist.printall();
+    printf("Stalls: %d\n", stalls);
 }
 
 template <typename T>
@@ -292,6 +296,9 @@ private:
 public:
     RamulatorWrapper(const char *config_filename, const char *trace_type, bool stats, const char *stats_filename) {
         worker = std::thread(init1, config_filename, trace_type, stats, stats_filename);
+    }
+    RamulatorWrapper(const char *config_filename, const char *stats_filename) {
+        worker = std::thread(init1, config_filename, "dram", true, stats_filename);
     }
     RamulatorWrapper(const char *config_filename) {
         worker = std::thread(init, config_filename);
