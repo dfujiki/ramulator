@@ -25,7 +25,23 @@ void test() {
     RW.notify_end();
 }
 
-int main() {test(); return 0;}
+void test2() {
+    RamulatorWrapper RW("configs/DDR3-config.cfg", 2);
+    RW.cpu_enqueue(0,3, 20734016);
+    RW.cpu_enqueue(0,1, 20846400);
+    RW.cpu_enqueue(0,6, 20734208);
+    RW.cpu_enqueue(0,8, 20841280, 20841280);
+    RW.cpu_enqueue(0,0, 20734144);
+    RW.cpu_enqueue(0,2, 20918976, 20734016);
+    RW.cpu_enqueue(1,3, 20734016);
+    RW.cpu_enqueue(1,1, 20846400);
+    RW.cpu_enqueue(1,6, 20734208);
+    RW.cpu_enqueue(1,8, 20841280, 20841280);
+    RW.cpu_enqueue(1,0, 20734144);
+    RW.cpu_enqueue(1,2, 20918976, 20734016);
+}
+
+int main() {test2(); return 0;}
 #endif
 
 #if 0

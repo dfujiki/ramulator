@@ -25,32 +25,73 @@ namespace ramulator
 
 class Trace {
 public:
-    Trace(const char* trace_fname);
+    Trace( ) { }; // default constructor which does nothing
+    explicit Trace(const char* trace_fname);
     // trace file format 1:
     // [# of bubbles(non-mem instructions)] [read address(dec or hex)] <optional: write address(evicted cacheline)>
-    bool get_unfiltered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type);
-    bool get_filtered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type);
+    virtual bool get_unfiltered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type);
+    virtual bool get_filtered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type);
     // trace file format 2:
     // [address(hex)] [R/W]
-    bool get_dramtrace_request(long& req_addr, Request::Type& req_type);
+    virtual bool get_dramtrace_request(long& req_addr, Request::Type& req_type);
+    // static auto make_trace(const char* trace_fname) -> std::unique_ptr<Trace> { return std::unique_ptr<Trace>(new Trace(trace_fname)); };
+    static auto make_trace(const char* trace_fname) -> Trace* { return new Trace(trace_fname); };
 
 private:
     std::ifstream file;
     std::string trace_name;
 };
 
-class TraceThread {
+struct CPUTraceEntry {
+    long bubble_cnt;
+    long rd_addr;
+    long wr_addr;
+};
+
+class TraceThread : public Trace {
 public:
-    TraceThread(){ TraceThread::max_queue_size = std::numeric_limits<unsigned int>::max(); };
+    TraceThread() { TraceThread::max_queue_size = std::numeric_limits<unsigned int>::max(); };
     TraceThread(unsigned int max_queue_size) { TraceThread::max_queue_size = max_queue_size; };
-    bool get_dramtrace_request(long& req_addr, Request::Type& req_type);
+    TraceThread(int core_id, unsigned int max_queue_size) : core_id(core_id) { TraceThread::max_queue_size = max_queue_size; };
+    bool get_dramtrace_request(long& req_addr, Request::Type& req_type) override;
     static void enqueue(long req_addr, Request::Type req_type);
     static void enqueue(long req_addr, const char* req_type);
+    static void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1);
     static void notify_end();
+    static void notify_end(int core);
     static std::queue<std::pair<long, Request::Type> > q;
     static std::mutex mtx;
     static std::condition_variable cv, queueFull;
     static std::queue<std::pair<long, Request::Type> >::size_type max_queue_size;
+    static std::vector<std::queue<CPUTraceEntry> > queue_list;
+    static int total_cores;
+    int core_id;
+    bool get_unfiltered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
+    bool get_filtered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
+};
+
+
+// Always interface wih this factory class when generating a CPU thread.
+class TraceThreadFactory {
+private:
+    int total_cores;
+    unsigned int max_queue_size;
+public:
+    TraceThreadFactory() { };
+    TraceThreadFactory(int total_cores, unsigned int max_queue_size): total_cores(total_cores), max_queue_size(max_queue_size)
+    {
+        TraceThread::queue_list = std::vector<std::queue<CPUTraceEntry> > (total_cores, std::queue<CPUTraceEntry>());
+        TraceThread::total_cores = total_cores;
+    };
+
+    auto make_trace_thread(int core_id) -> TraceThread*
+    {
+        assert (core_id >= 0 && core_id < total_cores);
+        // TraceThread tt(core_id, max_queue_size / total_cores);
+        // return std::unique_ptr<TraceThread>(new TraceThread(core_id, max_queue_size / total_cores + 1));
+        return new TraceThread(core_id, max_queue_size / total_cores + 1);
+    }
+    
 };
 
 class Window {
@@ -81,8 +122,12 @@ public:
     int id = 0;
     function<bool(Request)> send;
 
+//    Core(const Config& configs, int coreid,
+//        const char* trace_fname,
+//        function<bool(Request)> send_next, Cache* llc,
+//        std::shared_ptr<CacheSystem> cachesys, MemoryBase& memory);
     Core(const Config& configs, int coreid,
-        const char* trace_fname,
+        Trace* trace,
         function<bool(Request)> send_next, Cache* llc,
         std::shared_ptr<CacheSystem> cachesys, MemoryBase& memory);
     void tick();
@@ -113,7 +158,7 @@ public:
     bool reached_limit = false;;
 
 private:
-    Trace trace;
+    std::unique_ptr<Trace> trace;
     Window window;
 
     long bubble_cnt;
@@ -130,6 +175,8 @@ private:
 class Processor {
 public:
     Processor(const Config& configs, vector<const char*> trace_list,
+        function<bool(Request)> send, MemoryBase& memory);
+    Processor(const Config& configs, TraceThreadFactory& trace_thread_factory,
         function<bool(Request)> send, MemoryBase& memory);
     void tick();
     void receive(Request& req);

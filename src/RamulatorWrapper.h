@@ -37,6 +37,7 @@ using namespace ramulator;
 namespace _RamulatorWrapper
 {
 const int max_queue_size = 10000000;
+TraceThreadFactory trace_thread_factory;
 
 template <typename T>
 void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memory)
@@ -88,12 +89,12 @@ void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memor
 }
 
 template <typename T>
-void run_cputrace(const Config &configs, Memory<T, Controller> &memory, const std::vector<const char *> &files)
+void run_cputrace(const Config &configs, Memory<T, Controller> &memory, const int num_cores)
 {
     int cpu_tick = configs.get_cpu_tick();
     int mem_tick = configs.get_mem_tick();
     auto send = bind(&Memory<T, Controller>::send, &memory, placeholders::_1);
-    Processor proc(configs, files, send, memory);
+    Processor proc(configs, trace_thread_factory, send, memory);
     for (long i = 0;; i++)
     {
         proc.tick();
@@ -149,7 +150,7 @@ void start_run(const Config &configs, T *spec, const vector<const char *> &files
     //   assert(files.size() != 0);
     if (configs["trace_type"] == "CPU")
     {
-        run_cputrace(configs, memory, files);
+        run_cputrace(configs, memory, configs.get_core_num());
     }
     else if (configs["trace_type"] == "DRAM")
     {
@@ -163,7 +164,8 @@ void start_run(const Config &configs, T *spec, const vector<const char *> &files
     }
 }
 
-void init1(const char *config_filename, const char *trace_type = "dram", bool stats = false, const char *stats_filename = "")
+void init1(const char *config_filename, const char *trace_type = "dram", bool stats = false, const char *stats_filename = "",
+           int core_num = 1)
 {
     if (false)
     {
@@ -181,8 +183,6 @@ void init1(const char *config_filename, const char *trace_type = "dram", bool st
     if (strcmp(trace_type, "cpu") == 0)
     {
         configs.add("trace_type", "CPU");
-        fprintf(stderr, "CPU mode is not supported\n.");
-        assert(false);
     }
     else if (strcmp(trace_type, "dram") == 0)
     {
@@ -209,7 +209,8 @@ void init1(const char *config_filename, const char *trace_type = "dram", bool st
     }
     std::vector<const char *> files;
     // configs.set_core_num(argc - trace_start);
-    configs.set_core_num(1);
+    // configs.set_core_num(1);
+    configs.set_core_num(core_num);
 
     if (standard == "DDR3")
     {
@@ -295,20 +296,31 @@ private:
     std::thread worker;
 public:
     RamulatorWrapper(const char *config_filename, const char *trace_type, bool stats, const char *stats_filename) {
-        worker = std::thread(init1, config_filename, trace_type, stats, stats_filename);
+        worker = std::thread(init1, config_filename, trace_type, stats, stats_filename, 1);
     }
     RamulatorWrapper(const char *config_filename, const char *stats_filename) {
-        worker = std::thread(init1, config_filename, "dram", true, stats_filename);
+        worker = std::thread(init1, config_filename, "dram", true, stats_filename, 1);
     }
     RamulatorWrapper(const char *config_filename) {
         worker = std::thread(init, config_filename);
+    }
+    RamulatorWrapper(const char *config_filename, const char *stats_filename, int num_cores) {
+        trace_thread_factory = TraceThreadFactory(num_cores, max_queue_size);
+        worker = std::thread(init1, config_filename, "cpu", true, stats_filename, num_cores);
+    }
+    RamulatorWrapper(const char *config_filename, int num_cores) {
+        trace_thread_factory = TraceThreadFactory(num_cores, max_queue_size);
+        worker = std::thread(init1, config_filename, "cpu", false, "", num_cores);
     }
     ~RamulatorWrapper() {
         notify_end();
         worker.join();
     }
     void enqueue(long req_addr, const char* req_type) { TraceThread::enqueue(req_addr, req_type); }
-    void notify_end() { TraceThread::enqueue(0, Request::Type::END); }
+    void enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { TraceThread::cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
+    void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { TraceThread::cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
+    void notify_end() { TraceThread::notify_end(); }
+    void notify_end(int core) { TraceThread::notify_end(core); }
 };
 
 #endif

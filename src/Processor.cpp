@@ -27,12 +27,57 @@ Processor::Processor(const Config& configs,
   if (no_shared_cache) {
     for (int i = 0 ; i < tracenum ; ++i) {
       cores.emplace_back(new Core(
-          configs, i, trace_list[i], send_memory, nullptr,
+          configs, i, Trace::make_trace(trace_list[i]), send_memory, nullptr,
           cachesys, memory));
     }
   } else {
     for (int i = 0 ; i < tracenum ; ++i) {
-      cores.emplace_back(new Core(configs, i, trace_list[i],
+      cores.emplace_back(new Core(configs, i, Trace::make_trace(trace_list[i]),
+          std::bind(&Cache::send, &llc, std::placeholders::_1),
+          &llc, cachesys, memory));
+    }
+  }
+  for (int i = 0 ; i < tracenum ; ++i) {
+    cores[i]->callback = std::bind(&Processor::receive, this,
+        placeholders::_1);
+  }
+
+  // regStats
+  cpu_cycles.name("cpu_cycles")
+            .desc("cpu cycle number")
+            .precision(0)
+            ;
+  cpu_cycles = 0;
+}
+
+Processor::Processor(const Config& configs,
+    TraceThreadFactory& trace_thread_factory,
+    function<bool(Request)> send_memory,
+    MemoryBase& memory)
+    : ipcs(configs.get_core_num(), -1),
+    early_exit(configs.is_early_exit()),
+    no_core_caches(!configs.has_core_caches()),
+    no_shared_cache(!configs.has_l3_cache()),
+    cachesys(new CacheSystem(configs, send_memory)),
+    llc(l3_size, l3_assoc, l3_blocksz,
+         mshr_per_bank * configs.get_core_num(),
+         Cache::Level::L3, cachesys) {
+
+  int tracenum = configs.get_core_num();
+  assert(cachesys != nullptr);
+  assert(tracenum > 0);
+  printf("tracenum: %d\n", tracenum);
+
+  // TraceThreadFactory trace_thread_factory(tracenum, 10000000);
+  if (no_shared_cache) {
+    for (int i = 0 ; i < tracenum ; ++i) {
+      cores.emplace_back(new Core(
+          configs, i, trace_thread_factory.make_trace_thread(i), send_memory, nullptr,
+          cachesys, memory));
+    }
+  } else {
+    for (int i = 0 ; i < tracenum ; ++i) {
+      cores.emplace_back(new Core(configs, i, trace_thread_factory.make_trace_thread(i),
           std::bind(&Cache::send, &llc, std::placeholders::_1),
           &llc, cachesys, memory));
     }
@@ -113,11 +158,12 @@ bool Processor::has_reached_limit() {
 }
 
 Core::Core(const Config& configs, int coreid,
-    const char* trace_fname, function<bool(Request)> send_next,
+    Trace *trace,
+    function<bool(Request)> send_next,
     Cache* llc, std::shared_ptr<CacheSystem> cachesys, MemoryBase& memory)
     : id(coreid), no_core_caches(!configs.has_core_caches()),
     no_shared_cache(!configs.has_l3_cache()),
-    llc(llc), trace(trace_fname), memory(memory)
+    llc(llc), trace(trace), memory(memory)
 {
   // Build cache hierarchy
   if (no_core_caches) {
@@ -138,11 +184,11 @@ Core::Core(const Config& configs, int coreid,
     caches[1]->concatlower(caches[0].get());
   }
   if (no_core_caches) {
-    more_reqs = trace.get_filtered_request(
+    more_reqs = trace->get_filtered_request(
         bubble_cnt, req_addr, req_type);
     req_addr = memory.page_allocator(req_addr, id);
   } else {
-    more_reqs = trace.get_unfiltered_request(
+    more_reqs = trace->get_unfiltered_request(
         bubble_cnt, req_addr, req_type);
     req_addr = memory.page_allocator(req_addr, id);
   }
@@ -232,13 +278,13 @@ void Core::tick()
     }
 
     if (no_core_caches) {
-      more_reqs = trace.get_filtered_request(
+      more_reqs = trace->get_filtered_request(
           bubble_cnt, req_addr, req_type);
       if (req_addr != -1) {
         req_addr = memory.page_allocator(req_addr, id);
       }
     } else {
-      more_reqs = trace.get_unfiltered_request(
+      more_reqs = trace->get_unfiltered_request(
           bubble_cnt, req_addr, req_type);
       if (req_addr != -1) {
         req_addr = memory.page_allocator(req_addr, id);
@@ -425,6 +471,8 @@ std::mutex TraceThread::mtx;
 std::condition_variable TraceThread::cv;
 std::condition_variable TraceThread::queueFull;
 std::queue<std::pair<long, Request::Type> >::size_type TraceThread::max_queue_size = std::numeric_limits<std::queue<std::pair<long, Request::Type> >::size_type>::max();
+std::vector<std::queue<CPUTraceEntry> > TraceThread::queue_list;
+int TraceThread::total_cores = 0;
 
 bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 {
@@ -443,6 +491,7 @@ bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 
 void TraceThread::enqueue(long req_addr, Request::Type req_type)
 {
+    assert(!total_cores);
     std::unique_lock<std::mutex> lck(TraceThread::mtx);
     while (TraceThread::q.size() >= TraceThread::max_queue_size) {
         TraceThread::queueFull.wait(lck);
@@ -453,6 +502,7 @@ void TraceThread::enqueue(long req_addr, Request::Type req_type)
 
 void TraceThread::enqueue(long req_addr, const char* req_type)
 {
+    assert(!total_cores);
     std::unique_lock<std::mutex> lck(TraceThread::mtx);
     while (TraceThread::q.size() >= TraceThread::max_queue_size) {
         TraceThread::queueFull.wait(lck);
@@ -467,5 +517,104 @@ void TraceThread::enqueue(long req_addr, const char* req_type)
 
 void TraceThread::notify_end()
 {
-    TraceThread::enqueue(0, Request::Type::END);
+    if (total_cores == 0)
+        TraceThread::enqueue(0, Request::Type::END);
+    else {
+        CPUTraceEntry END_TRACE{0, -1, -1};
+        for (auto& lq: queue_list) {
+            lq.push(END_TRACE);
+        }
+    }
+}
+
+void TraceThread::notify_end(int core) {
+    assert(core >= 0 && core < TraceThread::total_cores);
+    CPUTraceEntry END_TRACE{0, -1, -1};
+    auto& lq = TraceThread::queue_list.at(core);
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    while (lq.size() >= TraceThread::max_queue_size) {
+        TraceThread::queueFull.wait(lck);
+    }
+    lq.push(END_TRACE);
+}
+
+void TraceThread::cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr)
+{
+    assert(core >= 0 && core < TraceThread::total_cores);
+    CPUTraceEntry trace_entry{bubble_cnt, read_addr, write_addr};
+
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    auto& lq = TraceThread::queue_list.at(core);
+    while (lq.size() >= TraceThread::max_queue_size) {
+        TraceThread::queueFull.wait(lck);
+    }
+    lq.push(trace_entry);
+    TraceThread::cv.notify_all();
+}
+
+bool TraceThread::get_unfiltered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
+{
+    auto& lq = TraceThread::queue_list.at(core_id);
+    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    while (lq.empty()) {
+        TraceThread::cv.wait(lck);
+    }
+    auto entry = lq.front();
+    lq.pop();
+    TraceThread::queueFull.notify_all();
+    // Termination condition
+    if (entry.rd_addr == -1 && entry.wr_addr == -1) return false;
+    assert (entry.rd_addr == -1 || entry.wr_addr == -1);
+    bubble_cnt = entry.bubble_cnt;
+    req_addr = entry.wr_addr != -1? entry.wr_addr
+                                  : entry.rd_addr;
+    req_type = entry.wr_addr != -1? Request::Type::WRITE
+                                  : Request::Type::READ;
+    return true;
+}
+
+bool TraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
+{
+    static bool has_write = false;
+    static long write_addr;
+    // if there's unprocessed write, no need to get a lock
+    if (has_write)
+    {
+        bubble_cnt = 0;
+        req_addr = write_addr;
+        req_type = Request::Type::WRITE;
+        has_write = false;
+        return true;
+    }
+    else
+    {
+        auto &lq = TraceThread::queue_list.at(core_id);
+        std::unique_lock<std::mutex> lck(TraceThread::mtx);
+        while (lq.empty())
+        {
+            TraceThread::cv.wait(lck);
+        }
+        auto entry = lq.front();
+        lq.pop();
+        TraceThread::queueFull.notify_all();
+        // Termination condition
+        if (entry.rd_addr == -1 && entry.wr_addr == -1)
+        {
+            has_write = false;
+            return false;
+        }
+        assert(entry.rd_addr != -1);
+
+        bubble_cnt = entry.bubble_cnt;
+        req_addr = entry.rd_addr;
+        req_type = Request::Type::READ;
+
+        if (entry.wr_addr != -1)
+        {
+            has_write = true;
+            write_addr = entry.wr_addr;
+        }
+
+        return true;
+    }
 }
