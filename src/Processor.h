@@ -42,57 +42,88 @@ private:
     std::string trace_name;
 };
 
+
 struct CPUTraceEntry {
     long bubble_cnt;
     long rd_addr;
     long wr_addr;
 };
 
+
 class TraceThread : public Trace {
 public:
-    TraceThread() { TraceThread::max_queue_size = std::numeric_limits<unsigned int>::max(); };
-    TraceThread(unsigned int max_queue_size) { TraceThread::max_queue_size = max_queue_size; };
-    TraceThread(int core_id, unsigned int max_queue_size) : core_id(core_id) { TraceThread::max_queue_size = max_queue_size; };
+    TraceThread(std::mutex& mtx, std::condition_variable& cv, std::condition_variable& queueFull, unsigned int max_queue_size)
+               : mtx(mtx), cv(cv), queueFull(queueFull), max_queue_size(max_queue_size) { };
+
+protected:
+    std::mutex& mtx;
+    std::condition_variable& cv;
+    std::condition_variable& queueFull;
+    unsigned int max_queue_size = std::numeric_limits<unsigned int>::max();
+};
+
+
+class DRAMTraceThread : public TraceThread {
+public:
+    DRAMTraceThread(std::mutex& mtx, std::condition_variable& cv, std::condition_variable& queueFull, unsigned int max_queue_size,
+                    std::queue<std::pair<long, Request::Type> >& q)
+                   : TraceThread(mtx, cv, queueFull, max_queue_size), q(q) { };
     bool get_dramtrace_request(long& req_addr, Request::Type& req_type) override;
-    static void enqueue(long req_addr, Request::Type req_type);
-    static void enqueue(long req_addr, const char* req_type);
-    static void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1);
-    static void notify_end();
-    static void notify_end(int core);
-    static std::queue<std::pair<long, Request::Type> > q;
-    static std::mutex mtx;
-    static std::condition_variable cv, queueFull;
-    static std::queue<std::pair<long, Request::Type> >::size_type max_queue_size;
-    static std::vector<std::queue<CPUTraceEntry> > queue_list;
-    static int total_cores;
-    int core_id;
+
+private: 
+    std::queue<std::pair<long, Request::Type> >& q;
+};
+
+
+class CPUTraceThread : public TraceThread {
+public:
+    CPUTraceThread(std::mutex& mtx, std::condition_variable& cv, std::condition_variable& queueFull, unsigned int max_queue_size,
+                    std::queue<CPUTraceEntry>& lq)
+                   : TraceThread(mtx, cv, queueFull, max_queue_size), lq(lq) { };
     bool get_unfiltered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
     bool get_filtered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
-};
 
-
-// Always interface wih this factory class when generating a CPU thread.
-class TraceThreadFactory {
 private:
-    int total_cores;
-    unsigned int max_queue_size;
-public:
-    TraceThreadFactory() { };
-    TraceThreadFactory(int total_cores, unsigned int max_queue_size): total_cores(total_cores), max_queue_size(max_queue_size)
-    {
-        TraceThread::queue_list = std::vector<std::queue<CPUTraceEntry> > (total_cores, std::queue<CPUTraceEntry>());
-        TraceThread::total_cores = total_cores;
-    };
-
-    auto make_trace_thread(int core_id) -> TraceThread*
-    {
-        assert (core_id >= 0 && core_id < total_cores);
-        // TraceThread tt(core_id, max_queue_size / total_cores);
-        // return std::unique_ptr<TraceThread>(new TraceThread(core_id, max_queue_size / total_cores + 1));
-        return new TraceThread(core_id, max_queue_size / total_cores + 1);
-    }
-    
+    std::queue<CPUTraceEntry>& lq;
 };
+
+
+// Always interface wih this factory class when generating a trace thread.
+class TraceThreadFactory {
+public:
+    TraceThreadFactory() = delete;
+    // DRAM Mode
+    TraceThreadFactory(unsigned int max_queue_size) 
+                      : max_queue_size(max_queue_size)
+                      , dram_trace_thread(new DRAMTraceThread(mtx, cv, queueFull, max_queue_size, q)){ };
+    // CPU Mode
+    TraceThreadFactory(int total_cores, unsigned int max_queue_size)
+                      : max_queue_size(max_queue_size)
+                      , queue_list(total_cores, std::queue<CPUTraceEntry>())
+                      , total_cores(total_cores) { };
+
+    auto make_cpu_trace_thread(int core_id) -> CPUTraceThread*;
+    auto get_dram_trace_thread() -> std::unique_ptr<DRAMTraceThread>;
+
+    void dram_enqueue(long req_addr, Request::Type req_type);
+    void dram_enqueue(long req_addr, const char* req_type);
+    void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1);
+    void notify_end();
+    void notify_end(int core);
+
+private:
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::condition_variable queueFull;
+    unsigned int max_queue_size;
+    // DRAM Mode
+    std::unique_ptr<DRAMTraceThread> dram_trace_thread; // DRAMTraceThread is a singleton
+    std::queue<std::pair<long, Request::Type> > q;
+    // CPU Mode
+    std::vector<std::queue<CPUTraceEntry> > queue_list;
+    int total_cores = 0;  // DRAM mode = 0, CPU mode > 0
+};
+
 
 class Window {
 public:

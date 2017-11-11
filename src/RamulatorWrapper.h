@@ -36,16 +36,13 @@ using namespace ramulator;
 
 namespace _RamulatorWrapper
 {
-const int max_queue_size = 10000000;
-TraceThreadFactory trace_thread_factory;
 
 template <typename T>
-void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memory)
+void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memory, TraceThreadFactory& trace_thread_factory)
 {
 
     /* initialize DRAM trace */
-    TraceThread trace(max_queue_size);
-    int stalls = 0;
+    auto trace = trace_thread_factory.get_dram_trace_thread();
 
     /* run simulation */
     bool stall = false, end = false;
@@ -59,10 +56,9 @@ void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memor
 
     while (!end || memory.pending_requests())
     {
-        if (stall) stalls++;
         if (!end && !stall)
         {
-            end = !trace.get_dramtrace_request(addr, type);
+            end = !trace->get_dramtrace_request(addr, type);
         }
 
         if (!end)
@@ -85,11 +81,10 @@ void run_dramtrace_on_thread(const Config &configs, Memory<T, Controller> &memor
     // This a workaround for statistics set only initially lost in the end
     memory.finish();
     Stats::statlist.printall();
-    printf("Stalls: %d\n", stalls);
 }
 
 template <typename T>
-void run_cputrace(const Config &configs, Memory<T, Controller> &memory, const int num_cores)
+void run_cputrace(const Config &configs, Memory<T, Controller> &memory, const int num_cores, TraceThreadFactory& trace_thread_factory)
 {
     int cpu_tick = configs.get_cpu_tick();
     int mem_tick = configs.get_mem_tick();
@@ -129,7 +124,7 @@ void run_cputrace(const Config &configs, Memory<T, Controller> &memory, const in
 }
 
 template <typename T>
-void start_run(const Config &configs, T *spec, const vector<const char *> &files)
+void start_run(const Config &configs, T *spec, TraceThreadFactory& trace_thread_factory)
 {
     // initiate controller and memory
     int C = configs.get_channels(), R = configs.get_ranks();
@@ -147,24 +142,24 @@ void start_run(const Config &configs, T *spec, const vector<const char *> &files
     }
     Memory<T, Controller> memory(configs, ctrls);
 
-    //   assert(files.size() != 0);
+    //   assert(trace_thread_factory.size() != 0);
     if (configs["trace_type"] == "CPU")
     {
-        run_cputrace(configs, memory, configs.get_core_num());
+        run_cputrace(configs, memory, configs.get_core_num(), trace_thread_factory);
     }
     else if (configs["trace_type"] == "DRAM")
     {
-        // run_dramtrace(configs, memory, files[0]);
+        // run_dramtrace(configs, memory, trace_thread_factory[0]);
         //****************************************//
-        run_dramtrace_on_thread(configs, memory);
+        run_dramtrace_on_thread(configs, memory, trace_thread_factory);
         //std::thread worker(run_dramtrace_on_thread<T>, std::cref(configs), std::ref(memory));
-        // std::thread test(sample_producer_thread, files[0]);
+        // std::thread test(sample_producer_thread, trace_thread_factory[0]);
         //worker.join();
         //test.join();
     }
 }
 
-void init1(const char *config_filename, const char *trace_type = "dram", bool stats = false, const char *stats_filename = "",
+void init(TraceThreadFactory& trace_thread_factory, const char *config_filename, const char *trace_type = "dram", bool stats = false, const char *stats_filename = "",
            int core_num = 1)
 {
     if (false)
@@ -207,7 +202,6 @@ void init1(const char *config_filename, const char *trace_type = "dram", bool st
         Stats::statlist.output(standard + ".stats");
         stats_out = standard + string(".stats");
     }
-    std::vector<const char *> files;
     // configs.set_core_num(argc - trace_start);
     // configs.set_core_num(1);
     configs.set_core_num(core_num);
@@ -215,75 +209,70 @@ void init1(const char *config_filename, const char *trace_type = "dram", bool st
     if (standard == "DDR3")
     {
         DDR3 *ddr3 = new DDR3(configs["org"], configs["speed"]);
-        start_run(configs, ddr3, files);
+        start_run(configs, ddr3, trace_thread_factory);
     }
     else if (standard == "DDR4")
     {
         DDR4 *ddr4 = new DDR4(configs["org"], configs["speed"]);
-        start_run(configs, ddr4, files);
+        start_run(configs, ddr4, trace_thread_factory);
     }
     else if (standard == "SALP-MASA")
     {
         SALP *salp8 = new SALP(configs["org"], configs["speed"], "SALP-MASA", configs.get_subarrays());
-        start_run(configs, salp8, files);
+        start_run(configs, salp8, trace_thread_factory);
     }
     else if (standard == "LPDDR3")
     {
         LPDDR3 *lpddr3 = new LPDDR3(configs["org"], configs["speed"]);
-        start_run(configs, lpddr3, files);
+        start_run(configs, lpddr3, trace_thread_factory);
     }
     else if (standard == "LPDDR4")
     {
         // total cap: 2GB, 1/2 of others
         LPDDR4 *lpddr4 = new LPDDR4(configs["org"], configs["speed"]);
-        start_run(configs, lpddr4, files);
+        start_run(configs, lpddr4, trace_thread_factory);
     }
     else if (standard == "GDDR5")
     {
         GDDR5 *gddr5 = new GDDR5(configs["org"], configs["speed"]);
-        start_run(configs, gddr5, files);
+        start_run(configs, gddr5, trace_thread_factory);
     }
     else if (standard == "HBM")
     {
         HBM *hbm = new HBM(configs["org"], configs["speed"]);
-        start_run(configs, hbm, files);
+        start_run(configs, hbm, trace_thread_factory);
     }
     else if (standard == "WideIO")
     {
         // total cap: 1GB, 1/4 of others
         WideIO *wio = new WideIO(configs["org"], configs["speed"]);
-        start_run(configs, wio, files);
+        start_run(configs, wio, trace_thread_factory);
     }
     else if (standard == "WideIO2")
     {
         // total cap: 2GB, 1/2 of others
         WideIO2 *wio2 = new WideIO2(configs["org"], configs["speed"], configs.get_channels());
         wio2->channel_width *= 2;
-        start_run(configs, wio2, files);
+        start_run(configs, wio2, trace_thread_factory);
     }
     // Various refresh mechanisms
     else if (standard == "DSARP")
     {
         DSARP *dsddr3_dsarp = new DSARP(configs["org"], configs["speed"], DSARP::Type::DSARP, configs.get_subarrays());
-        start_run(configs, dsddr3_dsarp, files);
+        start_run(configs, dsddr3_dsarp, trace_thread_factory);
     }
     else if (standard == "ALDRAM")
     {
         ALDRAM *aldram = new ALDRAM(configs["org"], configs["speed"]);
-        start_run(configs, aldram, files);
+        start_run(configs, aldram, trace_thread_factory);
     }
     else if (standard == "TLDRAM")
     {
         TLDRAM *tldram = new TLDRAM(configs["org"], configs["speed"], configs.get_subarrays());
-        start_run(configs, tldram, files);
+        start_run(configs, tldram, trace_thread_factory);
     }
 
     printf("[RamulatorWrapper] Simulation done. Statistics written to %s\n", stats_out.c_str());
-}
-
-void init(const char *config_filename)
-{
-    init1(config_filename, "dram", false, "");
 }
 
 }
@@ -294,33 +283,36 @@ class RamulatorWrapper
 {
 private:
     std::thread worker;
+    const int max_queue_size = 10000000;
+    TraceThreadFactory trace_thread_factory;
+
 public:
-    RamulatorWrapper(const char *config_filename, const char *trace_type, bool stats, const char *stats_filename) {
-        worker = std::thread(init1, config_filename, trace_type, stats, stats_filename, 1);
+    // DRAM mode constructor
+    RamulatorWrapper(const char *config_filename, const char *stats_filename) : trace_thread_factory(max_queue_size) {
+        worker = std::thread(init, std::ref(trace_thread_factory), config_filename, "dram", true, stats_filename, 1);
     }
-    RamulatorWrapper(const char *config_filename, const char *stats_filename) {
-        worker = std::thread(init1, config_filename, "dram", true, stats_filename, 1);
+    RamulatorWrapper(const char *config_filename): trace_thread_factory(max_queue_size)  {
+        worker = std::thread(init, std::ref(trace_thread_factory), config_filename, "dram", false, "", 1);
     }
-    RamulatorWrapper(const char *config_filename) {
-        worker = std::thread(init, config_filename);
+    // CPU mode constructor
+    RamulatorWrapper(const char *config_filename, const char *stats_filename, int num_cores) : trace_thread_factory(num_cores, max_queue_size) {
+        worker = std::thread(init, std::ref(trace_thread_factory), config_filename, "cpu", true, stats_filename, num_cores);
     }
-    RamulatorWrapper(const char *config_filename, const char *stats_filename, int num_cores) {
-        trace_thread_factory = TraceThreadFactory(num_cores, max_queue_size);
-        worker = std::thread(init1, config_filename, "cpu", true, stats_filename, num_cores);
-    }
-    RamulatorWrapper(const char *config_filename, int num_cores) {
-        trace_thread_factory = TraceThreadFactory(num_cores, max_queue_size);
-        worker = std::thread(init1, config_filename, "cpu", false, "", num_cores);
+    RamulatorWrapper(const char *config_filename, int num_cores) : trace_thread_factory(num_cores, max_queue_size) {
+        worker = std::thread(init, std::ref(trace_thread_factory), config_filename, "cpu", false, "", num_cores);
     }
     ~RamulatorWrapper() {
         notify_end();
         worker.join();
     }
-    void enqueue(long req_addr, const char* req_type) { TraceThread::enqueue(req_addr, req_type); }
-    void enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { TraceThread::cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
-    void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { TraceThread::cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
-    void notify_end() { TraceThread::notify_end(); }
-    void notify_end(int core) { TraceThread::notify_end(core); }
+    // DRAM API
+    void enqueue(long req_addr, const char* req_type) { trace_thread_factory.dram_enqueue(req_addr, req_type); }
+    // CPU API
+    void enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { trace_thread_factory.cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
+    void cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr = -1) { trace_thread_factory.cpu_enqueue(core, bubble_cnt, read_addr, write_addr); };
+    void notify_end(int core) { trace_thread_factory.notify_end(core); }
+    // For explicitly terminate the ramulator in simulation. This is automatically called from destructor.
+    void notify_end() { trace_thread_factory.notify_end(); }
 };
 
 #endif

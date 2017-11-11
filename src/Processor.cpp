@@ -72,12 +72,12 @@ Processor::Processor(const Config& configs,
   if (no_shared_cache) {
     for (int i = 0 ; i < tracenum ; ++i) {
       cores.emplace_back(new Core(
-          configs, i, trace_thread_factory.make_trace_thread(i), send_memory, nullptr,
+          configs, i, trace_thread_factory.make_cpu_trace_thread(i), send_memory, nullptr,
           cachesys, memory));
     }
   } else {
     for (int i = 0 ; i < tracenum ; ++i) {
-      cores.emplace_back(new Core(configs, i, trace_thread_factory.make_trace_thread(i),
+      cores.emplace_back(new Core(configs, i, trace_thread_factory.make_cpu_trace_thread(i),
           std::bind(&Cache::send, &llc, std::placeholders::_1),
           &llc, cachesys, memory));
     }
@@ -465,103 +465,30 @@ bool Trace::get_dramtrace_request(long& req_addr, Request::Type& req_type)
     return true;
 }
 
-
-std::queue<std::pair<long, Request::Type> > TraceThread::q;
-std::mutex TraceThread::mtx;
-std::condition_variable TraceThread::cv;
-std::condition_variable TraceThread::queueFull;
-std::queue<std::pair<long, Request::Type> >::size_type TraceThread::max_queue_size = std::numeric_limits<std::queue<std::pair<long, Request::Type> >::size_type>::max();
-std::vector<std::queue<CPUTraceEntry> > TraceThread::queue_list;
-int TraceThread::total_cores = 0;
-
-bool TraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
+bool DRAMTraceThread::get_dramtrace_request(long& req_addr, Request::Type& req_type)
 {
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
-    while (TraceThread::q.empty()) {
-        TraceThread::cv.wait(lck);
+    std::unique_lock<std::mutex> lck(mtx);
+    while (q.empty()) {
+        cv.wait(lck);
     }
-    auto entry = TraceThread::q.front();
-    TraceThread::q.pop();
-    TraceThread::queueFull.notify_all();
+    auto entry = q.front();
+    q.pop();
+    queueFull.notify_all();
     if (entry.second == Request::Type::END) return false;
     req_addr = entry.first;
     req_type = entry.second;
     return true;
 }
 
-void TraceThread::enqueue(long req_addr, Request::Type req_type)
+bool CPUTraceThread::get_unfiltered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
 {
-    assert(!total_cores);
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
-    while (TraceThread::q.size() >= TraceThread::max_queue_size) {
-        TraceThread::queueFull.wait(lck);
-    }
-    TraceThread::q.push(std::make_pair(req_addr, req_type));
-    TraceThread::cv.notify_all();
-}
-
-void TraceThread::enqueue(long req_addr, const char* req_type)
-{
-    assert(!total_cores);
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
-    while (TraceThread::q.size() >= TraceThread::max_queue_size) {
-        TraceThread::queueFull.wait(lck);
-    }
-    Request::Type ty = req_type[0] == 'R'? Request::Type::READ  : 
-                       req_type[0] == 'W'? Request::Type::WRITE :
-                       Request::Type::END;
-    assert(ty != Request::Type::END);
-    TraceThread::q.push(std::make_pair(req_addr, ty));
-    TraceThread::cv.notify_all();
-}
-
-void TraceThread::notify_end()
-{
-    if (total_cores == 0)
-        TraceThread::enqueue(0, Request::Type::END);
-    else {
-        CPUTraceEntry END_TRACE{0, -1, -1};
-        for (auto& lq: queue_list) {
-            lq.push(END_TRACE);
-        }
-    }
-}
-
-void TraceThread::notify_end(int core) {
-    assert(core >= 0 && core < TraceThread::total_cores);
-    CPUTraceEntry END_TRACE{0, -1, -1};
-    auto& lq = TraceThread::queue_list.at(core);
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
-    while (lq.size() >= TraceThread::max_queue_size) {
-        TraceThread::queueFull.wait(lck);
-    }
-    lq.push(END_TRACE);
-}
-
-void TraceThread::cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr)
-{
-    assert(core >= 0 && core < TraceThread::total_cores);
-    CPUTraceEntry trace_entry{bubble_cnt, read_addr, write_addr};
-
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
-    auto& lq = TraceThread::queue_list.at(core);
-    while (lq.size() >= TraceThread::max_queue_size) {
-        TraceThread::queueFull.wait(lck);
-    }
-    lq.push(trace_entry);
-    TraceThread::cv.notify_all();
-}
-
-bool TraceThread::get_unfiltered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
-{
-    auto& lq = TraceThread::queue_list.at(core_id);
-    std::unique_lock<std::mutex> lck(TraceThread::mtx);
+    std::unique_lock<std::mutex> lck(mtx);
     while (lq.empty()) {
-        TraceThread::cv.wait(lck);
+        cv.wait(lck);
     }
     auto entry = lq.front();
     lq.pop();
-    TraceThread::queueFull.notify_all();
+    queueFull.notify_all();
     // Termination condition
     if (entry.rd_addr == -1 && entry.wr_addr == -1) return false;
     assert (entry.rd_addr == -1 || entry.wr_addr == -1);
@@ -573,7 +500,7 @@ bool TraceThread::get_unfiltered_request(long& bubble_cnt, long& req_addr, Reque
     return true;
 }
 
-bool TraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
+bool CPUTraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Request::Type& req_type)
 {
     static bool has_write = false;
     static long write_addr;
@@ -588,15 +515,14 @@ bool TraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Request
     }
     else
     {
-        auto &lq = TraceThread::queue_list.at(core_id);
-        std::unique_lock<std::mutex> lck(TraceThread::mtx);
+        std::unique_lock<std::mutex> lck(mtx);
         while (lq.empty())
         {
-            TraceThread::cv.wait(lck);
+            cv.wait(lck);
         }
         auto entry = lq.front();
         lq.pop();
-        TraceThread::queueFull.notify_all();
+        queueFull.notify_all();
         // Termination condition
         if (entry.rd_addr == -1 && entry.wr_addr == -1)
         {
@@ -617,4 +543,79 @@ bool TraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Request
 
         return true;
     }
+}
+
+auto TraceThreadFactory::make_cpu_trace_thread(int core_id) -> CPUTraceThread*
+{
+    assert (core_id >= 0 && core_id < total_cores);
+    return new CPUTraceThread(mtx, cv, queueFull, max_queue_size / total_cores + 1, queue_list.at(core_id));
+}
+
+auto TraceThreadFactory::get_dram_trace_thread() -> std::unique_ptr<DRAMTraceThread>
+{
+    assert (dram_trace_thread);
+    return std::move(dram_trace_thread);
+}
+
+void TraceThreadFactory::dram_enqueue(long req_addr, Request::Type req_type)
+{
+    assert(!total_cores);
+    std::unique_lock<std::mutex> lck(mtx);
+    while (q.size() >= max_queue_size) {
+        queueFull.wait(lck);
+    }
+    q.push(std::make_pair(req_addr, req_type));
+    cv.notify_all();
+}
+
+void TraceThreadFactory::dram_enqueue(long req_addr, const char* req_type)
+{
+    assert(!total_cores);
+    std::unique_lock<std::mutex> lck(mtx);
+    while (q.size() >= max_queue_size) {
+        queueFull.wait(lck);
+    }
+    Request::Type ty = req_type[0] == 'R'? Request::Type::READ  : 
+                       req_type[0] == 'W'? Request::Type::WRITE :
+                       Request::Type::END;
+    assert(ty != Request::Type::END);
+    q.push(std::make_pair(req_addr, ty));
+    cv.notify_all();
+}
+
+void TraceThreadFactory::notify_end()
+{
+    if (total_cores == 0)
+        dram_enqueue(0, Request::Type::END);
+    else {
+        CPUTraceEntry END_TRACE{0, -1, -1};
+        for (auto& lq: queue_list) {
+            lq.push(END_TRACE);
+        }
+    }
+}
+
+void TraceThreadFactory::notify_end(int core) {
+    assert(core >= 0 && core < total_cores);
+    CPUTraceEntry END_TRACE{0, -1, -1};
+    auto& lq = queue_list.at(core);
+    std::unique_lock<std::mutex> lck(mtx);
+    while (lq.size() >= max_queue_size) {
+        queueFull.wait(lck);
+    }
+    lq.push(END_TRACE);
+}
+
+void TraceThreadFactory::cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr)
+{
+    assert(core >= 0 && core < total_cores);
+    CPUTraceEntry trace_entry{bubble_cnt, read_addr, write_addr};
+
+    std::unique_lock<std::mutex> lck(mtx);
+    auto& lq = queue_list.at(core);
+    while (lq.size() >= max_queue_size) {
+        queueFull.wait(lck);
+    }
+    lq.push(trace_entry);
+    cv.notify_all();
 }

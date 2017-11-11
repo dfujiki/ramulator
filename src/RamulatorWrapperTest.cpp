@@ -2,6 +2,8 @@
 #include <chrono>
 
 #ifdef _WRAPPER_TEST
+
+// Delay test
 void test() {
     using namespace std::this_thread;
     using namespace std::chrono;
@@ -25,6 +27,17 @@ void test() {
     RW.notify_end();
 }
 
+// Equivalent to dram.trace
+void test1() {
+    RamulatorWrapper RW("configs/DDR3-config.cfg");
+    RW.enqueue(0x12345680, "R");
+    RW.enqueue(0x4cbd56c0, "W");
+    RW.enqueue(0x35d46f00, "R");
+    RW.enqueue(0x696fed40, "W");
+    RW.enqueue(0x7876af80, "R");
+}
+
+//Equivalent to cpu.trace cpu.trace (2 cores)
 void test2() {
     RamulatorWrapper RW("configs/DDR3-config.cfg", 2);
     RW.cpu_enqueue(0,3, 20734016);
@@ -41,7 +54,25 @@ void test2() {
     RW.cpu_enqueue(1,2, 20918976, 20734016);
 }
 
-int main() {test2(); return 0;}
+// Multiple instance test
+void test3() {
+    RamulatorWrapper RW("configs/DDR3-config.cfg");
+    RamulatorWrapper RW1("configs/DDR3-config.cfg", "DDR3.stats1");
+
+    RW.enqueue(0x12345680, "R");
+    RW.enqueue(0x4cbd56c0, "W");
+    RW.enqueue(0x35d46f00, "R");
+    RW.enqueue(0x696fed40, "W");
+    RW.enqueue(0x7876af80, "R");
+
+    RW1.enqueue(0x12345680, "R");
+    RW1.enqueue(0x4cbd56c0, "W");
+    RW1.enqueue(0x35d46f00, "R");
+    RW1.enqueue(0x696fed40, "W");
+    RW1.enqueue(0x7876af80, "R");
+}
+
+int main() {test3(); return 0;}
 #endif
 
 #if 0
