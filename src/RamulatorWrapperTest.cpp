@@ -72,7 +72,7 @@ void test3() {
     RW1.enqueue(0x7876af80, "R");
 }
 
-int main() {test3(); return 0;}
+int main() {test2(); return 0;}
 #endif
 
 #if 0

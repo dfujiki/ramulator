@@ -78,13 +78,14 @@ private:
 class CPUTraceThread : public TraceThread {
 public:
     CPUTraceThread(std::mutex& mtx, std::condition_variable& cv, std::condition_variable& queueFull, unsigned int max_queue_size,
-                    std::queue<CPUTraceEntry>& lq)
-                   : TraceThread(mtx, cv, queueFull, max_queue_size), lq(lq) { };
+                    std::queue<CPUTraceEntry>& lq, const std::vector<std::queue<CPUTraceEntry>>& queue_list)
+                   : TraceThread(mtx, cv, queueFull, max_queue_size), lq(lq), queue_list(queue_list) { };
     bool get_unfiltered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
     bool get_filtered_request (long &bubble_cnt, long &req_addr, Request::Type &req_type) override;
 
 private:
     std::queue<CPUTraceEntry>& lq;
+    const std::vector<std::queue<CPUTraceEntry>>& queue_list;
 };
 
 

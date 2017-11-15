@@ -186,11 +186,13 @@ Core::Core(const Config& configs, int coreid,
   if (no_core_caches) {
     more_reqs = trace->get_filtered_request(
         bubble_cnt, req_addr, req_type);
-    req_addr = memory.page_allocator(req_addr, id);
+    if (req_addr != -1)
+        req_addr = memory.page_allocator(req_addr, id);
   } else {
     more_reqs = trace->get_unfiltered_request(
         bubble_cnt, req_addr, req_type);
-    req_addr = memory.page_allocator(req_addr, id);
+    if (req_addr != -1)
+        req_addr = memory.page_allocator(req_addr, id);
   }
 
   // set expected limit instruction for calculating weighted speedup
@@ -263,12 +265,14 @@ void Core::tick()
         window.insert(false, req_addr);
         cpu_inst++;
     }
-    else {
+    else if (req_type == Request::Type::WRITE) {
         // write request
-        assert(req_type == Request::Type::WRITE);
+        // assert(req_type == Request::Type::WRITE);
         Request req(req_addr, req_type, callback, id);
         if (!send(req)) return;
         cpu_inst++;
+    } else {
+        assert(req_type == Request::Type::IDLE);
     }
     if (long(cpu_inst.value()) == expected_limit_insts && !reached_limit) {
       record_cycs = clk;
@@ -484,13 +488,22 @@ bool CPUTraceThread::get_unfiltered_request(long& bubble_cnt, long& req_addr, Re
 {
     std::unique_lock<std::mutex> lck(mtx);
     while (lq.empty()) {
+        // if there is a core with non empty queue, send idle to this core and process the request.
+        // the core can be explicitly terminated by sending terminate entry with notify_end()
+        for (auto& q: queue_list) {
+            if (!q.empty()){
+                bubble_cnt = 0;
+                req_type = Request::Type::IDLE;
+                return true;
+            }
+        }
         cv.wait(lck);
     }
     auto entry = lq.front();
-    lq.pop();
-    queueFull.notify_all();
     // Termination condition
     if (entry.rd_addr == -1 && entry.wr_addr == -1) return false;
+    lq.pop();
+    queueFull.notify_all();
     assert (entry.rd_addr == -1 || entry.wr_addr == -1);
     bubble_cnt = entry.bubble_cnt;
     req_addr = entry.wr_addr != -1? entry.wr_addr
@@ -518,17 +531,26 @@ bool CPUTraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Requ
         std::unique_lock<std::mutex> lck(mtx);
         while (lq.empty())
         {
+            // if there is a core with non empty queue, send idle to this core and process the request.
+            // the core can be explicitly terminated by sending terminate entry with notify_end()
+            for (auto& q: queue_list) {
+                if (!q.empty()){
+                    bubble_cnt = 0;
+                    req_type = Request::Type::IDLE;
+                    return true;
+                }
+            }
             cv.wait(lck);
         }
         auto entry = lq.front();
-        lq.pop();
-        queueFull.notify_all();
         // Termination condition
         if (entry.rd_addr == -1 && entry.wr_addr == -1)
         {
             has_write = false;
             return false;
         }
+        lq.pop();
+        queueFull.notify_all();
         assert(entry.rd_addr != -1);
 
         bubble_cnt = entry.bubble_cnt;
@@ -548,7 +570,7 @@ bool CPUTraceThread::get_filtered_request(long& bubble_cnt, long& req_addr, Requ
 auto TraceThreadFactory::make_cpu_trace_thread(int core_id) -> CPUTraceThread*
 {
     assert (core_id >= 0 && core_id < total_cores);
-    return new CPUTraceThread(mtx, cv, queueFull, max_queue_size / total_cores + 1, queue_list.at(core_id));
+    return new CPUTraceThread(mtx, cv, queueFull, max_queue_size / total_cores + 1, queue_list.at(core_id), queue_list);
 }
 
 auto TraceThreadFactory::get_dram_trace_thread() -> std::unique_ptr<DRAMTraceThread>
@@ -609,7 +631,7 @@ void TraceThreadFactory::notify_end(int core) {
 void TraceThreadFactory::cpu_enqueue(int core, long bubble_cnt, long read_addr, long write_addr)
 {
     assert(core >= 0 && core < total_cores);
-    CPUTraceEntry trace_entry{bubble_cnt, read_addr, write_addr};
+    CPUTraceEntry trace_entry {bubble_cnt, read_addr, write_addr};
 
     std::unique_lock<std::mutex> lck(mtx);
     auto& lq = queue_list.at(core);

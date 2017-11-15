@@ -28,6 +28,7 @@ public:
         SELFREFRESH,
         EXTENSION,
         MAX,
+        IDLE,
         END
     } type;
 
